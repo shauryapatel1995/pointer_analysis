@@ -24,19 +24,21 @@ The order of pagefault command and pin command is important. Pagefaults should a
 ``` ../vmem_timeline_stream <(pagefault command) <(pin command) ```
 
 ### The pagefault command 
+Run the pagefault command inside the tools perf folder from the installed kernel.
+
 ``` sudo ./perf record -e probe:do_swap_page_L46 --clockid CLOCK_MONOTONIC -aR | sudo ./perf script --ns```
 
 ### The PIN commands 
 We use cgroups to control the memory percentage available to an application. Use the same percentage you would as without PIN tool.
 Pin commands look different for different applications. For microbenchmarks use the following command. 
 
-``` sudo cgexec -g memory:trial ./pin -t source/tools/ManualExamples/obj-intel64/pinatrace.so -- ./benchmark_to_run ```
+``` sudo cgexec -g memory:trial ./pin -t source/tools/ManualExamples/obj-intel64/pinatrace.so -- ./benchmark_to_run 2>&1 1>output```
 
 Setup parsec from [here](url). For parsec we use the -s option of the benchmark to append a command to run before the benchmark. 
 
 ``` parsecmgmt -a run -p parsec.canneal -i simlarge -s "sudo cgexec -g memory:trial ./pin -t source/tools/ManualExamples/obj-intel64/pinatrace.so --"```
 
 Setup xhpcg from [here](https://hpcg-benchmark.org/software/browse.html%3Fstart=0&per=5.html). Follow [these instructions](https://ireneli.eu/2016/02/15/installation/) to setup MPI first.
-Run xhpcg with PIN
+Run xhpcg with PIN.
 
-``` ```
+``` sudo cgexec -g memory:trial mpirun --allow-run-as-root -np 1 ./pin -t source/tools/ManualExamples/obj-intel64/pinatrace.so -- /directory/to/hpcg/xhpcg 32 24 16 2>&1 1>output ```
