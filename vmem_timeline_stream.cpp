@@ -204,7 +204,7 @@ void merge_traces_and_collect_stats(void *args) {
 void parse_pagefault(std::string pagefault_str) {
     std::string data;
     // TODO(shaurp): Make this application agnostic
-    if (pagefault_str.find("linkedlist") == std::string::npos)
+    if (pagefault_str.find("xhpcg") == std::string::npos)
         return; 
     
     struct pagefault_values *pagefault = (struct pagefault_values *) malloc(sizeof(pagefault_values));
