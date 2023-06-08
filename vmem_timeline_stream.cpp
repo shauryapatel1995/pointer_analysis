@@ -62,8 +62,10 @@ void merge_traces_and_collect_stats(void *args) {
     struct mem_values *curr_mem_trace_val = NULL; 
     struct pagefault_values *curr_pagefault_val = NULL; 
 
-    int pointer_pagefaults = 0; 
-    int non_pointer_pagefaults = 0;
+    int predicted_pointer_pagefaults = 0; 
+    int unpredicted_pointer_pagefaults = 0; 
+    int predicted_non_pointer_pagefaults = 0;
+    int unpredicted_non_pointer_pagefaults = 0;
     while (1) {
         // sleep here.
         std::this_thread::sleep_for(std::chrono::seconds(10));
@@ -88,8 +90,42 @@ void merge_traces_and_collect_stats(void *args) {
             pagefaults_lock.unlock();
         }
         
-        if (!curr_pagefault_val)
+        if (!curr_pagefault_val) {
+            // Only keep trace values for 2 mins and process the rest.
+            while (curr_mem_trace_val && curr_mem_trace_val->record_time.tv_sec < curr.tv_sec - 120) {
+                if (active_registers.count(curr_mem_trace_val->reg_no)) {
+                    u_int64_t value = active_registers[curr_mem_trace_val->reg_no]; 
+                    // Decrease a ref to an alive value and remove it if necessary.
+                    active_reg_values[value]--;
+                    if (active_reg_values[value] == 0)
+                            active_reg_values.erase(value);
+                    active_registers[curr_mem_trace_val->reg_no] = curr_mem_trace_val->reg_value;
+                            
+                    // Check if value already exists in another register, then just add a ref to it.
+                    // If not add a new ref to the value.
+                    if (active_reg_values.count(curr_mem_trace_val->reg_value)) 
+                        active_reg_values[curr_mem_trace_val->reg_value]++;
+                    else
+                        active_reg_values[curr_mem_trace_val->reg_value] = 1;
+                    
+                } else {
+                    active_registers[curr_mem_trace_val->reg_no] = curr_mem_trace_val->reg_value; 
+                    if (active_reg_values.count(curr_mem_trace_val->reg_value))
+                        active_reg_values[curr_mem_trace_val->reg_value]++;
+                    else 
+                        active_reg_values[curr_mem_trace_val->reg_value] = 1;
+                }
+
+                mem_trace_lock.lock();
+                free(curr_mem_trace_val);
+                curr_mem_trace_val = NULL;
+                mem_trace_values.pop_front();
+                if (!mem_trace_values.empty()) 
+                    curr_mem_trace_val = mem_trace_values.front();
+                mem_trace_lock.unlock();
+            }
             continue; 
+        }
 
         std::cout << "Analyzing time of first is: " << curr_mem_trace_val->record_time.tv_sec << " Curr time is :" << curr.tv_sec << std::endl;
         std::cout << "Time of pagefault is: " << curr_pagefault_val->record_time.tv_sec << std::endl;
@@ -133,10 +169,17 @@ void merge_traces_and_collect_stats(void *args) {
                 mem_trace_lock.unlock();
             } else {
                 // Pagefault encountered check current state.
-                if (active_reg_values.count(curr_pagefault_val->page_address))
-                    pointer_pagefaults++;
-                else 
-                    non_pointer_pagefaults++;
+                if (active_reg_values.count(curr_pagefault_val->page_address)) {
+                    if (curr_pagefault_val->pagecache_address)
+                        predicted_pointer_pagefaults++;
+                    else
+                        unpredicted_pointer_pagefaults++;
+                } else {
+                    if (curr_pagefault_val->pagecache_address)
+                        predicted_non_pointer_pagefaults++;
+                    else
+                        unpredicted_non_pointer_pagefaults++;
+                }
 
                 /* if (non_pointer_pagefaults % 100 == 1 || pointer_pagefaults % 100 == 1) {
                      std::cout << "Pagefault address: " << std::hex <<curr_pagefault_val->page_address << std::endl;
@@ -162,40 +205,9 @@ void merge_traces_and_collect_stats(void *args) {
         }
     
 
-        std::cout << "Pointer based pagefaults : " << pointer_pagefaults << " Non pointer based pagefaults : " << non_pointer_pagefaults << std::endl;
-        // Only keep trace values for 2 mins and process the rest.
-        /* while (curr_mem_trace_val && curr_mem_trace_val->record_time.tv_sec < curr.tv_sec - 120) {
-            if (active_registers.count(curr_mem_trace_val->reg_no)) {
-                u_int64_t value = active_registers[curr_mem_trace_val->reg_no]; 
-                // Decrease a ref to an alive value and remove it if necessary.
-                active_reg_values[value]--;
-                if (active_reg_values[value] == 0)
-                        active_reg_values.erase(value);
-                active_registers[curr_mem_trace_val->reg_no] = curr_mem_trace_val->reg_value;
-                        
-                // Check if value already exists in another register, then just add a ref to it.
-                // If not add a new ref to the value.
-                if (active_reg_values.count(curr_mem_trace_val->reg_value)) 
-                    active_reg_values[curr_mem_trace_val->reg_value]++;
-                else
-                    active_reg_values[curr_mem_trace_val->reg_value] = 1;
-                
-            } else {
-                active_registers[curr_mem_trace_val->reg_no] = curr_mem_trace_val->reg_value; 
-                if (active_reg_values.count(curr_mem_trace_val->reg_value))
-                    active_reg_values[curr_mem_trace_val->reg_value]++;
-                else 
-                    active_reg_values[curr_mem_trace_val->reg_value] = 1;
-            }
-
-            mem_trace_lock.lock();
-            free(curr_mem_trace_val);
-            curr_mem_trace_val = NULL;
-            mem_trace_values.pop_front();
-            if (!mem_trace_values.empty()) 
-                curr_mem_trace_val = mem_trace_values.front();
-            mem_trace_lock.unlock();
-        } */
+        std::cout << "Pointer based pagefaults : " << predicted_pointer_pagefaults + unpredicted_pointer_pagefaults << " Non pointer based pagefaults : " << predicted_non_pointer_pagefaults + unpredicted_non_pointer_pagefaults << std::endl;
+        std::cout << "Predicted pointer faults: " << predicted_pointer_pagefaults << " Unpredicted pointer faults: " << unpredicted_pointer_pagefaults << std::endl;
+        
 
 }
 }
@@ -204,7 +216,7 @@ void merge_traces_and_collect_stats(void *args) {
 void parse_pagefault(std::string pagefault_str) {
     std::string data;
     // TODO(shaurp): Make this application agnostic
-    if (pagefault_str.find("xhpcg") == std::string::npos)
+    if (pagefault_str.find("canneal") == std::string::npos)
         return; 
     
     struct pagefault_values *pagefault = (struct pagefault_values *) malloc(sizeof(pagefault_values));
@@ -215,10 +227,11 @@ void parse_pagefault(std::string pagefault_str) {
             pagefault->page_address = std::stoull(page_num, 0, 16);
         } else if (data.find("page=") != std::string::npos) {
             std::string pte_num = data.substr(7);
-            if (pte_num.compare("0x0") == 0) 
+            if (pte_num.compare("0") == 0) {
                 pagefault->pagecache_address = 0;
-            else
+            } else {
                 pagefault->pagecache_address = 1;
+            }
         } else if (data.find(".")  != std::string::npos) {
             
             std::string::size_type pos = data.find('.');
