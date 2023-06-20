@@ -49,6 +49,7 @@ void print_pagefault(struct pagefault_values *val) {
     std::cout << "Addr: " << std::hex << val->page_address << std::dec << " Time: " << val->record_time.tv_sec << "." << val->record_time.tv_nsec << std::endl;
 }
 
+volatile int end_analysis = 0;
 std::deque<pagefault_values *> pagefaults; 
 std::deque<mem_values *> mem_trace_values; 
 std::mutex pagefaults_lock; 
@@ -57,6 +58,32 @@ std::unordered_map<u_int64_t, u_int64_t> active_registers;
 std::unordered_map<u_int64_t, u_int64_t> active_reg_values;
 std::unordered_map<u_int64_t, u_int64_t>  reg_prog_counters;
 int missed_instructions = 0;
+
+void update_registers_state(struct mem_values *curr_mem_trace_val) {
+    if (active_registers.count(curr_mem_trace_val->reg_no)) {
+        u_int64_t value = active_registers[curr_mem_trace_val->reg_no]; 
+        // Decrease a ref to an alive value and remove it if necessary.
+        active_reg_values[value]--;
+        if (active_reg_values[value] == 0)
+                active_reg_values.erase(value);
+        active_registers[curr_mem_trace_val->reg_no] = curr_mem_trace_val->reg_value;
+                
+        // Check if value already exists in another register, then just add a ref to it.
+        // If not add a new ref to the value.
+        if (active_reg_values.count(curr_mem_trace_val->reg_value)) 
+            active_reg_values[curr_mem_trace_val->reg_value]++;
+        else
+            active_reg_values[curr_mem_trace_val->reg_value] = 1;
+
+    } else {
+        active_registers[curr_mem_trace_val->reg_no] = curr_mem_trace_val->reg_value; 
+        if (active_reg_values.count(curr_mem_trace_val->reg_value))
+            active_reg_values[curr_mem_trace_val->reg_value]++;
+        else 
+            active_reg_values[curr_mem_trace_val->reg_value] = 1;
+    }
+}
+
 // Merge the two traces and calculate required stats.
 void merge_traces_and_collect_stats(void *args) {
     struct mem_values *curr_mem_trace_val = NULL; 
@@ -66,6 +93,7 @@ void merge_traces_and_collect_stats(void *args) {
     int unpredicted_pointer_pagefaults = 0; 
     int predicted_non_pointer_pagefaults = 0;
     int unpredicted_non_pointer_pagefaults = 0;
+    int nothing_to_trace = 0;
     while (1) {
         // sleep here.
         std::this_thread::sleep_for(std::chrono::seconds(10));
@@ -80,8 +108,14 @@ void merge_traces_and_collect_stats(void *args) {
             mem_trace_lock.unlock();
         }
 
-        if (!curr_mem_trace_val)
+        if (!curr_mem_trace_val) {
+            nothing_to_trace++;
+            if (nothing_to_trace > 5) { 
+                end_analysis = 1;
+                return;
+            }
             continue; 
+        }
 
         if (pagefaults.size() > 0) {
             pagefaults_lock.lock();
@@ -93,29 +127,7 @@ void merge_traces_and_collect_stats(void *args) {
         if (!curr_pagefault_val) {
             // Only keep trace values for 2 mins and process the rest.
             while (curr_mem_trace_val && curr_mem_trace_val->record_time.tv_sec < curr.tv_sec - 120) {
-                if (active_registers.count(curr_mem_trace_val->reg_no)) {
-                    u_int64_t value = active_registers[curr_mem_trace_val->reg_no]; 
-                    // Decrease a ref to an alive value and remove it if necessary.
-                    active_reg_values[value]--;
-                    if (active_reg_values[value] == 0)
-                            active_reg_values.erase(value);
-                    active_registers[curr_mem_trace_val->reg_no] = curr_mem_trace_val->reg_value;
-                            
-                    // Check if value already exists in another register, then just add a ref to it.
-                    // If not add a new ref to the value.
-                    if (active_reg_values.count(curr_mem_trace_val->reg_value)) 
-                        active_reg_values[curr_mem_trace_val->reg_value]++;
-                    else
-                        active_reg_values[curr_mem_trace_val->reg_value] = 1;
-                    
-                } else {
-                    active_registers[curr_mem_trace_val->reg_no] = curr_mem_trace_val->reg_value; 
-                    if (active_reg_values.count(curr_mem_trace_val->reg_value))
-                        active_reg_values[curr_mem_trace_val->reg_value]++;
-                    else 
-                        active_reg_values[curr_mem_trace_val->reg_value] = 1;
-                }
-
+                update_registers_state(curr_mem_trace_val);
                 mem_trace_lock.lock();
                 free(curr_mem_trace_val);
                 curr_mem_trace_val = NULL;
@@ -132,33 +144,7 @@ void merge_traces_and_collect_stats(void *args) {
         while (curr_mem_trace_val && curr_mem_trace_val->record_time.tv_sec < curr.tv_sec - 10 && curr_pagefault_val) {
             // Pagefault is in future update the state we know.
             if (curr_mem_trace_val->record_time < curr_pagefault_val->record_time) {
-                // Reg existed, update active reg values and register state.
-                if (active_registers.count(curr_mem_trace_val->reg_no)) {
-                    u_int64_t value = active_registers[curr_mem_trace_val->reg_no]; 
-                    // Decrease a ref to an alive value and remove it if necessary.
-                    active_reg_values[value]--;
-                    if (active_reg_values[value] <= 0)
-                        active_reg_values.erase(value);
-                    active_registers[curr_mem_trace_val->reg_no] = curr_mem_trace_val->reg_value;
-                    
-                    // Check if value already exists in another register, then just add a ref to it.
-                    // If not add a new ref to the value.
-                    if (active_reg_values.count(curr_mem_trace_val->reg_value)) {
-                        active_reg_values[curr_mem_trace_val->reg_value]++;
-                    } else {
-                        active_reg_values[curr_mem_trace_val->reg_value] = 1;
-                    }
-                } else {
-                    active_registers[curr_mem_trace_val->reg_no] = curr_mem_trace_val->reg_value;
-                    if (active_reg_values.count(curr_mem_trace_val->reg_value)) {
-                        active_reg_values[curr_mem_trace_val->reg_value]++;
-                    } else { 
-                        active_reg_values[curr_mem_trace_val->reg_value] = 1;
-                    }
-
-                    reg_prog_counters[curr_mem_trace_val->reg_no] = curr_mem_trace_val->PC;
-                }
-
+                update_registers_state(curr_mem_trace_val);
                 mem_trace_lock.lock();
                 //print_mem_value(curr_mem_trace_val);
                 mem_trace_values.pop_front();
@@ -181,7 +167,9 @@ void merge_traces_and_collect_stats(void *args) {
                         unpredicted_non_pointer_pagefaults++;
                 }
 
-                /* if (non_pointer_pagefaults % 100 == 1 || pointer_pagefaults % 100 == 1) {
+                /*
+                 * Debug code for debugging the Program counters of faults.
+                    if (non_pointer_pagefaults % 100 == 1 || pointer_pagefaults % 100 == 1) {
                      std::cout << "Pagefault address: " << std::hex <<curr_pagefault_val->page_address << std::endl;
                     for (auto const &pair: active_reg_values) {
                          std::cout << std::hex << pair.first << ": " << pair.second << std::endl;
@@ -216,7 +204,7 @@ void merge_traces_and_collect_stats(void *args) {
 void parse_pagefault(std::string pagefault_str) {
     std::string data;
     // TODO(shaurp): Make this application agnostic
-    if (pagefault_str.find("canneal") == std::string::npos)
+    if (pagefault_str.find("linkedlist") == std::string::npos)
         return; 
     
     struct pagefault_values *pagefault = (struct pagefault_values *) malloc(sizeof(pagefault_values));
@@ -346,12 +334,12 @@ void read_lines_for_pagefault(void * args) {
     std::string data; 
     std::ifstream input_stream;
     input_stream.open(read_args->fd_string, std::ios::in);
-    while(1) {
-        while(getline(input_stream, data)) {
-            data.append("\n");
-            parse_pagefault(data);
-        }
+    // end_analysis is required because perf doesn't stop running.
+    while(getline(input_stream, data) && !end_analysis) {
+        data.append("\n");
+        parse_pagefault(data);
     }
+    return;
 }
 
 void read_lines_for_memtrace(void * args) {
@@ -359,19 +347,18 @@ void read_lines_for_memtrace(void * args) {
     std::string data; 
     std::ifstream input_stream;
     input_stream.open(read_args->fd_string, std::ios::in);
-    while(1) {
-        while(getline(input_stream, data)) {
+    while(getline(input_stream, data)) {
             
-            if (data.find("eof") != std::string::npos) {
-                std::cout << "eof" << std::endl;
-                return;
-            }
-            data.append("\n");
-            if (data.find("Reg") != std::string::npos) {
-                parse_mem_trace(data);
-            }
+        if (data.find("eof") != std::string::npos) {
+            std::cout << "eof" << std::endl;
+            return;
+        }
+        data.append("\n");
+        if (data.find("Reg") != std::string::npos) {
+            parse_mem_trace(data);
         }
     }
+    return;
 }
 
 
@@ -387,9 +374,10 @@ int main(int argc, char *argv[]) {
 
     std::thread t2(read_lines_for_memtrace, &args2);
     std::thread t3(merge_traces_and_collect_stats, &args);
-    t1.join();
-    t2.join();
+    
     t3.join();
+    t2.join();
+    t1.join();
     exit(EXIT_SUCCESS);
 }
 
