@@ -19,9 +19,7 @@ VOID RecordIP(VOID *ip) {
 
 // Print a memory read record
 VOID RecordMemRead(VOID* ip, VOID* addr) {
-    struct timespec curr; 
-    clock_gettime(CLOCK_MONOTONIC, &curr);
-    fprintf(stderr, "%ld.%ld %p: R %p\n", curr.tv_sec, curr.tv_nsec, ip, addr); 
+    fprintf(stderr, "%p: R %p\n", ip, addr); 
 }
 
 // Print a memory write record
@@ -50,20 +48,11 @@ VOID Instruction(INS ins, VOID* v)
     // prefixed instructions appear as predicated instructions in Pin.
     // INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) RecordIP, IARG_INST_PTR,IARG_END);
     UINT32 memOperands = INS_OperandCount(ins);
-    //bool memRead = false; 
-    // Iterate over each memory operand of the instruction.
-    /* for (UINT32 memOp = 0; memOp < memOperands; memOp++)
-    {
-        // This can only check all mem operands.
-        if (INS_MemoryOperandIsRead(ins, memOp))
-        {
-            INS_InsertPredicatedCall(ins, IPOINT_BEFORE, (AFUNPTR)RecordMemRead, IARG_INST_PTR, IARG_MEMORYOP_EA, memOp,
-                                  IARG_END);
-            memRead = true; 
-        }
-    } */
-    if(INS_IsMemoryRead(ins) || INS_IsLea(ins)) {
-    // if (memRead) {
+    // UINT32 mem_values = INS_MemoryOperandCount(ins);
+    //bool is_reg_written = false; 
+    // Instrument all Loads and LEA
+    if(INS_IsMemoryRead(ins)) {
+        // Check all the operands of the instruction.
         for (UINT32 memOp = 0; memOp < memOperands; memOp++)
         {
 
@@ -79,12 +68,16 @@ VOID Instruction(INS ins, VOID* v)
 
                 if (INS_RegWContain(ins, reg))
                 {
-                    
+                    // is_reg_written = true;
                     if(INS_IsValidForIpointAfter(ins) && REG_valid_for_iarg_reg_value(reg)) 
                         INS_InsertPredicatedCall(ins, IPOINT_AFTER, (AFUNPTR)RecordRegWrite, IARG_INST_PTR, IARG_REG_VALUE, reg, IARG_ADDRINT, regname, IARG_END);
                 }
+                /* if (is_reg_written && memOp < mem_values && INS_MemoryOperandIsRead(ins, memOp))
+                {
+                    INS_InsertPredicatedCall(ins, IPOINT_BEFORE, (AFUNPTR)RecordMemRead, IARG_INST_PTR, IARG_MEMORYOP_EA, memOp,
+                                     IARG_END);
+                }*/
         }
-        //memRead = false; 
     }
 
 
