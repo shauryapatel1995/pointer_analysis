@@ -35,6 +35,7 @@ struct pagefault_values {
 
 struct mem_values {
     u_int64_t PC;
+    u_int64_t source;
     u_int64_t reg_no; 
     u_int64_t reg_value;
     timespec record_time; 
@@ -56,16 +57,26 @@ std::mutex pagefaults_lock;
 std::mutex mem_trace_lock;
 std::unordered_map<u_int64_t, u_int64_t> active_registers; 
 std::unordered_map<u_int64_t, u_int64_t> active_reg_values;
+std::unordered_map<u_int64_t, u_int64_t> active_reg_values_source;
 std::unordered_map<u_int64_t, u_int64_t>  reg_prog_counters;
+
+// Update the current with the source if the memory read is associated to this IP.
+struct mem_values * curr_mem_val;
 int missed_instructions = 0;
 
+/*
+ * Parse a memory access and update the current register state.
+ */
 void update_registers_state(struct mem_values *curr_mem_trace_val) {
     if (active_registers.count(curr_mem_trace_val->reg_no)) {
         u_int64_t value = active_registers[curr_mem_trace_val->reg_no]; 
         // Decrease a ref to an alive value and remove it if necessary.
         active_reg_values[value]--;
-        if (active_reg_values[value] == 0)
+        if (active_reg_values[value] == 0) {
+                // Erase values from both source map and values map.
                 active_reg_values.erase(value);
+                active_reg_values_source.erase(value);
+        }
         active_registers[curr_mem_trace_val->reg_no] = curr_mem_trace_val->reg_value;
                 
         // Check if value already exists in another register, then just add a ref to it.
@@ -75,8 +86,12 @@ void update_registers_state(struct mem_values *curr_mem_trace_val) {
         else
             active_reg_values[curr_mem_trace_val->reg_value] = 1;
 
+        // Add source data for the value. We assume latest source is the source 
+        // of the value.
+        active_reg_values_source[curr_mem_trace_val->reg_value] = curr_mem_trace_val->source;
     } else {
-        active_registers[curr_mem_trace_val->reg_no] = curr_mem_trace_val->reg_value; 
+        active_registers[curr_mem_trace_val->reg_no] = curr_mem_trace_val->reg_value;
+        active_reg_values_source[curr_mem_trace_val->reg_value] = curr_mem_trace_val->source;
         if (active_reg_values.count(curr_mem_trace_val->reg_value))
             active_reg_values[curr_mem_trace_val->reg_value]++;
         else 
@@ -84,7 +99,9 @@ void update_registers_state(struct mem_values *curr_mem_trace_val) {
     }
 }
 
-// Merge the two traces and calculate required stats.
+/*
+ * Merge the two traces and calculate required stats.
+ */
 void merge_traces_and_collect_stats(void *args) {
     struct mem_values *curr_mem_trace_val = NULL; 
     struct pagefault_values *curr_pagefault_val = NULL; 
@@ -156,6 +173,11 @@ void merge_traces_and_collect_stats(void *args) {
             } else {
                 // Pagefault encountered check current state.
                 if (active_reg_values.count(curr_pagefault_val->page_address)) {
+
+                    if (active_reg_values_source.count(curr_pagefault_val->page_address)) 
+                        std::cout << "Source: " << active_reg_values_source.at(curr_pagefault_val->page_address) 
+                        << " Dest: " << curr_pagefault_val->page_address << std::endl;
+                    
                     if (curr_pagefault_val->pagecache_address)
                         predicted_pointer_pagefaults++;
                     else
@@ -201,6 +223,9 @@ void merge_traces_and_collect_stats(void *args) {
 }
 
 // TODO(shaurp): Check if we can change this to string_view
+/*
+ * Parse a pagefault and save it in pagefault stream.
+ */
 void parse_pagefault(std::string pagefault_str) {
     std::string data;
     // TODO(shaurp): Make this application agnostic
@@ -245,6 +270,23 @@ void parse_pagefault(std::string pagefault_str) {
     return;
 }
 
+/*
+ * Parse PIN memory access trace string.
+ */
+void parse_mem_read(std::string mem_read) {
+    // Function to parse mem_read, it should be associated with the last register read.
+    if (mem_read.find("R") != std::string::npos && curr_mem_val) {
+        unsigned long long PC = std::stoull(mem_read.substr(0, 14), 0, 16);
+
+        if(PC == curr_mem_val->PC) { 
+            curr_mem_val->source = (std::stoull(mem_read.substr(mem_read.find("R") + 2), 0, 16) &  ~((1 << 12)-1));
+        }
+    }
+}
+
+/*
+ * Parse PIN register load trace string.
+ */
 void parse_mem_trace(std::string mem_trace) {
     std::string data;
    
@@ -324,7 +366,8 @@ void parse_mem_trace(std::string mem_trace) {
         std::cout << "PRINTING VALUE " << mem_trace << std::endl;
         print_mem_value(mem_values);
     }
-
+    // Update the latest register load processed.
+    curr_mem_val = mem_values;
     mem_trace_values.push_back(mem_values);
     mem_trace_lock.unlock();
 }
@@ -356,6 +399,8 @@ void read_lines_for_memtrace(void * args) {
         data.append("\n");
         if (data.find("Reg") != std::string::npos) {
             parse_mem_trace(data);
+        } else {
+            parse_mem_read(data);
         }
     }
     return;
