@@ -49,37 +49,49 @@ VOID Instruction(INS ins, VOID* v)
     // INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) RecordIP, IARG_INST_PTR,IARG_END);
     UINT32 memOperands = INS_OperandCount(ins);
     // UINT32 mem_values = INS_MemoryOperandCount(ins);
-    //bool is_reg_written = false; 
+    bool is_reg_written = false; 
     // Instrument all Loads and LEA
     if(INS_IsMemoryRead(ins)) {
         // Check all the operands of the instruction.
         for (UINT32 memOp = 0; memOp < memOperands; memOp++)
         {
 
-                REG reg = INS_OperandReg(ins, memOp);
+               REG reg = INS_OperandReg(ins, memOp);
 
                 if(reg == REG_INVALID()) {
                     continue; 
                 }
                 
                 REG regname = REG_FullRegName(reg);
-                if (regname == REG_INVALID()) 
+                
+                if (regname == REG_INVALID()) { 
                     continue;
-
-                if (INS_RegWContain(ins, reg))
-                {
-                    // is_reg_written = true;
-                    if(INS_IsValidForIpointAfter(ins) && REG_valid_for_iarg_reg_value(reg)) 
-                        INS_InsertPredicatedCall(ins, IPOINT_AFTER, (AFUNPTR)RecordRegWrite, IARG_INST_PTR, IARG_REG_VALUE, reg, IARG_ADDRINT, regname, IARG_END);
                 }
-                /* if (is_reg_written && memOp < mem_values && INS_MemoryOperandIsRead(ins, memOp))
-                {
-                    INS_InsertPredicatedCall(ins, IPOINT_BEFORE, (AFUNPTR)RecordMemRead, IARG_INST_PTR, IARG_MEMORYOP_EA, memOp,
-                                     IARG_END);
-                }*/
+
+                
+                if (INS_RegWContain(ins, reg)) {
+                    // is_reg_written = true;
+                    if(INS_IsValidForIpointAfter(ins) && REG_valid_for_iarg_reg_value(reg)) {
+                        INS_InsertPredicatedCall(ins, IPOINT_AFTER, (AFUNPTR)RecordRegWrite, IARG_INST_PTR, IARG_REG_VALUE, reg, IARG_ADDRINT, regname, IARG_END);
+                        is_reg_written = true;
+                    }
+                }
+                
         }
+    
     }
 
+    memOperands = INS_MemoryOperandCount(ins);
+ 
+    // Iterate over each memory operand of the instruction.
+    for (UINT32 memOp = 0; memOp < memOperands && is_reg_written; memOp++)
+    {
+        if (INS_MemoryOperandIsRead(ins, memOp))
+        {
+            INS_InsertPredicatedCall(ins, IPOINT_AFTER, (AFUNPTR)RecordMemRead, IARG_INST_PTR, IARG_MEMORYOP_EA, memOp,
+                                     IARG_END);
+        }
+    }
 
 }
 
