@@ -10,6 +10,7 @@
 # We want to look at future pagefaults from current pagefault.
 pagefault_stream = dict()
 predicted = 0
+num_future_pagefaults = 128
 def collect_pagefault(pagefault_str, fault_index):
     # Convert pagefault string to pagefault val.
     trace = pagefault_str.split()
@@ -27,6 +28,7 @@ def collect_pagefault(pagefault_str, fault_index):
 
 def collect_pointers(pointer_str, fault_index):
     global predicted
+    global num_future_pagefaults
     # Convert pointer string to pointer val
     # Check if the pointer exists in the future 
     # pagefault stream.
@@ -35,7 +37,7 @@ def collect_pointers(pointer_str, fault_index):
     if pointer_page in pagefault_stream:
         # Look at its access history.
         for fault_index_history_val in pagefault_stream[pointer_page]:
-            if fault_index_history_val > fault_index and fault_index_history_val < fault_index + 128:
+            if fault_index_history_val > fault_index and fault_index_history_val < fault_index + num_future_pagefaults:
                     predicted += 1
                     break
 
@@ -45,6 +47,9 @@ def main():
     print("Running analysis")   
     print("Creating pagefault history")
     fault_index = -1
+    # This counter is used to print what is the offset of the pointer 
+    # on the page.
+    pointer_counter = 0
     with open('/data1/ll-cp-analysis-random') as trace:
         fault = trace.readline()
         while fault:
@@ -62,8 +67,12 @@ def main():
         fault = trace.readline()
         while fault:
             if "Faulting" in fault:
+                #TODO(shaurp): Reset the pointer counter here.
+                #TODO(shaurp): Write faulting addr to file.
                 fault_index += 1
             elif "Address" in fault:
+                #TODO(shaurp): Print fault index from inside here.
+                #TODO(shaurp): Update script to read the offset from the trace. 
                 collect_pointers(fault, fault_index)
             else:
                 print("Trace is incorrect", fault)
