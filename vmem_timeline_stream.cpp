@@ -238,7 +238,6 @@ void parse_pagefault(std::string pagefault_str) {
     std::string data;
     // TODO(shaurp): Make this application agnostic
 /*    if (pagefault_str.find("specperl") == std::string::npos){
-	//std::cout<<"Quebec\n";
         return; 
     }*/
     std::regex time_pattern(R"(\d+\.\d+)");
@@ -260,7 +259,7 @@ void parse_pagefault(std::string pagefault_str) {
           else if (std::regex_search(data,matchResult,time_pattern)) {
             std::string::size_type pos = matchResult.position(0);
             if (data.substr(0,pos).compare("") == 0 || data.substr(pos + 1).compare("") == 0) {
-                std::cout << "Pagefault freed: " << data.substr(0,pos)<< std::endl;
+                //std::cout << "Pagefault freed: " << data.substr(0,pos)<< std::endl;
                 free(pagefault);
                 return;
             }
