@@ -12,6 +12,8 @@
 #include <mutex>
 #include <unordered_map>
 #include <set>
+#include <regex>
+#include <sstream>
 
 bool operator <(const timespec& lhs, const timespec& rhs)
 {
@@ -113,24 +115,29 @@ void merge_traces_and_collect_stats(void *args) {
     int nothing_to_trace = 0;
     while (1) {
         // sleep here.
-        std::this_thread::sleep_for(std::chrono::seconds(10));
+        std::this_thread::sleep_for(std::chrono::seconds(1));
         std::cout << "Size of memory trace " << mem_trace_values.size() << " Pagefault trace size " << pagefaults.size() << std::endl;
         struct timespec curr;
         clock_gettime(CLOCK_MONOTONIC, &curr);
 
         if (mem_trace_values.size() > 0) {
+	    std::cout << "Acquiring lock (merge)\n";
             mem_trace_lock.lock();
             if (!mem_trace_values.empty()) 
+		std::cout << "mem trace values not empty\n";
                 curr_mem_trace_val = mem_trace_values.front(); 
             mem_trace_lock.unlock();
+	    std::cout << "Freeing lock (merge) \n";
         }
 
         if (!curr_mem_trace_val) {
             nothing_to_trace++;
-            if (nothing_to_trace > 5) { 
+            std::cout << "Nothing to trace\n";
+            /*if (nothing_to_trace > 15) {
+                std::cout<<"nothing to trace \n"; 
                 end_analysis = 1;
                 return;
-            }
+            }*/
             continue; 
         }
 
@@ -149,8 +156,9 @@ void merge_traces_and_collect_stats(void *args) {
                 free(curr_mem_trace_val);
                 curr_mem_trace_val = NULL;
                 mem_trace_values.pop_front();
-                if (!mem_trace_values.empty()) 
+                if (!mem_trace_values.empty()) {
                     curr_mem_trace_val = mem_trace_values.front();
+		}
                 mem_trace_lock.unlock();
             }
             continue; 
@@ -229,9 +237,12 @@ void merge_traces_and_collect_stats(void *args) {
 void parse_pagefault(std::string pagefault_str) {
     std::string data;
     // TODO(shaurp): Make this application agnostic
-    if (pagefault_str.find("linkedlist") == std::string::npos)
+/*    if (pagefault_str.find("specperl") == std::string::npos){
+	//std::cout<<"Quebec\n";
         return; 
-    
+    }*/
+    std::regex time_pattern(R"(\d+\.\d+)");
+    std::smatch matchResult;
     struct pagefault_values *pagefault = (struct pagefault_values *) malloc(sizeof(pagefault_values));
     std::stringstream ss(pagefault_str);
     while(ss >> data) { 
@@ -245,16 +256,15 @@ void parse_pagefault(std::string pagefault_str) {
             } else {
                 pagefault->pagecache_address = 1;
             }
-        } else if (data.find(".")  != std::string::npos) {
-            
-            std::string::size_type pos = data.find('.');
+        } // get timestamp: 
+          else if (std::regex_search(data,matchResult,time_pattern)) {
+            std::string::size_type pos = matchResult.position(0);
             if (data.substr(0,pos).compare("") == 0 || data.substr(pos + 1).compare("") == 0) {
-                std::cout << "Pagefault freed" << std::endl;
+                std::cout << "Pagefault freed: " << data.substr(0,pos)<< std::endl;
                 free(pagefault);
                 return;
             }
 
-            
             pagefault->record_time.tv_sec = stol(data.substr(0, pos));
             pagefault->record_time.tv_nsec = stol(data.substr(pos + 1));
 
@@ -263,7 +273,6 @@ void parse_pagefault(std::string pagefault_str) {
         }
     }
     pagefaults_lock.lock();
-    //std::cout << pagefault_str << std::endl;
     pagefaults.push_back(pagefault);
     pagefaults_lock.unlock();
 
@@ -293,7 +302,6 @@ void parse_mem_trace(std::string mem_trace) {
     struct mem_values *mem_values = (struct mem_values *) malloc(sizeof(struct mem_values));
     std::stringstream ss(mem_trace);
     while(ss >> data) {
-        // std::cout << data << std::endl;
         if (data.find(".") != std::string::npos) {
             if (data.find_first_not_of("0123456789.") != std::string::npos) {
                 free(mem_values);
@@ -360,6 +368,7 @@ void parse_mem_trace(std::string mem_trace) {
                 mem_values->PC = std::stoull(data.substr(5), 0, 16);
         }
     }
+//    std::cout <<"Acquiring lock (parse mem)\n";
     mem_trace_lock.lock();
     // print_mem_value(mem_values);
     if (mem_values->record_time.tv_sec > 10000000) {
@@ -370,40 +379,68 @@ void parse_mem_trace(std::string mem_trace) {
     curr_mem_val = mem_values;
     mem_trace_values.push_back(mem_values);
     mem_trace_lock.unlock();
+//    std::cout << "Freeing lock (parse mem) \n";
 }
 
-void read_lines_for_pagefault(void * args) {
-    struct read_line_args *read_args = (struct read_line_args *) args;
-    std::string data; 
-    std::ifstream input_stream;
-    input_stream.open(read_args->fd_string, std::ios::in);
-    // end_analysis is required because perf doesn't stop running.
-    while(getline(input_stream, data) && !end_analysis) {
-        data.append("\n");
-        parse_pagefault(data);
+void read_lines_for_pagefault(const std::string& file_path) {
+    std::ifstream file(file_path, std::ios::in);
+    const size_t buffer_size = 8192; // Adjust based on your needs
+    std::vector<char> buffer(buffer_size + 1); // Extra space for null terminator
+    std::string partial_line;
+    while (file.read(buffer.data(), buffer_size) || file.gcount()) {
+        buffer[file.gcount()] = '\0'; 
+        std::string current_chunk = partial_line + buffer.data();
+        std::istringstream chunk_stream(current_chunk);
+        std::string line;
+	// might change this threshold later
+        while(pagefaults.size() > 10000){
+            std::this_thread::yield();
+        }
+        while (std::getline(chunk_stream, line)) {
+            if (!chunk_stream.eof()) {
+                line.append("\n");
+                parse_pagefault(line);
+            } else {
+                // This line is incomplete, store it for the next chunk
+                partial_line = line;
+            }
+        }
     }
-    return;
 }
 
-void read_lines_for_memtrace(void * args) {
-    struct read_line_args *read_args = (struct read_line_args *) args;
-    std::string data; 
-    std::ifstream input_stream;
-    input_stream.open(read_args->fd_string, std::ios::in);
-    while(getline(input_stream, data)) {
-            
-        if (data.find("eof") != std::string::npos) {
-            std::cout << "eof" << std::endl;
-            return;
+void read_lines_for_memtrace(const std::string& file_path) {
+    std::ifstream file(file_path, std::ios::in);
+    const size_t buffer_size = 8192;
+    std::vector<char> buffer(buffer_size + 1); // Extra space for null terminator
+    std::string partial_line;
+    //std::ifstream file;
+    while (file.read(buffer.data(), buffer_size) || file.gcount()) {
+        buffer[file.gcount()] = '\0'; 
+        std::string current_chunk = partial_line + buffer.data();
+        std::istringstream chunk_stream(current_chunk);
+        std::string line;
+	// might change this threshold later
+        while(mem_trace_values.size() > 10000){
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            std::this_thread::yield();
         }
-        data.append("\n");
-        if (data.find("Reg") != std::string::npos) {
-            parse_mem_trace(data);
-        } else {
-            parse_mem_read(data);
+        while (std::getline(chunk_stream, line)) {
+            if (!chunk_stream.eof()) {
+                if (line.find("eof") != std::string::npos) {
+                    std::cout << "eof" << std::endl;
+                    return;
+                }
+                line.append("\n");
+                if (line.find("Reg") != std::string::npos) {
+                    parse_mem_trace(line);
+                } else {
+                    parse_mem_read(line);
+                }
+            } else {
+                partial_line = line;
+            }
         }
     }
-    return;
 }
 
 
@@ -412,12 +449,12 @@ int main(int argc, char *argv[]) {
     char * mem_buffer = (char *) malloc(4096);
 
     pthread_t thread_id, thread_id_2;
+    std::cout << "Main thread running \n";
     std::cout << argv[1] << " " << argv[2] << std::endl;
     struct read_line_args args = {argv[1], line_buffer};
-    std::thread t1(read_lines_for_pagefault, &args);
-    struct read_line_args args2 = {argv[2], mem_buffer};
+    std::thread t1(read_lines_for_pagefault, std::string(argv[1]));
 
-    std::thread t2(read_lines_for_memtrace, &args2);
+    std::thread t2(read_lines_for_memtrace, std::string(argv[2]));
     std::thread t3(merge_traces_and_collect_stats, &args);
     
     t3.join();
